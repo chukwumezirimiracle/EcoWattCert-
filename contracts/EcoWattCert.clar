@@ -104,3 +104,131 @@
             })
         (map-set certified-producers producer true)
         (ok true)))
+
+
+;; Remove a certifier (only contract owner)
+(define-public (remove-certifier (certifier principal))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        ;; Check if certifier exists and is not the contract owner
+        (asserts! (and 
+            (not (is-eq certifier contract-owner))
+            (default-to false (map-get? authorized-certifiers certifier))
+        ) err-invalid-certifier)
+        (map-delete authorized-certifiers certifier)
+        (ok true)))
+
+;; Apply for certification
+(define-public (apply-for-certification (energy-amount uint) (energy-source (string-ascii 20)))
+    (let (
+        (producer-data (default-to 
+            {
+                total-production: u0,
+                last-certification-date: u0,
+                energy-source: "",
+                certification-status: false,
+                revocation-reason: none,
+                revocation-date: none,
+                revoked-by: none
+            }
+            (map-get? producer-energy-data tx-sender)))
+    )
+        ;; Validate energy amount
+        (asserts! (and 
+            (>= energy-amount (var-get minimum-production))
+            (<= energy-amount (var-get max-production))
+        ) err-invalid-amount)
+        ;; Validate energy source string
+        (asserts! (validate-string energy-source) err-invalid-string)
+        ;; Check if not already certified
+        (asserts! (not (get certification-status producer-data)) err-already-certified)
+
+        (map-set producer-energy-data tx-sender
+            {
+                total-production: energy-amount,
+                last-certification-date: block-height,
+                energy-source: energy-source,
+                certification-status: false,
+                revocation-reason: none,
+                revocation-date: none,
+                revoked-by: none
+            })
+        (ok true)))
+
+
+;; Get certification fee
+(define-read-only (get-certification-fee)
+    (ok (var-get certification-fee)))
+
+;; Set certification fee (only contract owner)
+(define-public (set-certification-fee (new-fee uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        ;; Validate new fee amount
+        (asserts! (and 
+            (> new-fee u0)
+            (<= new-fee (var-get max-fee))
+        ) err-invalid-fee)
+        (var-set certification-fee new-fee)
+        (ok true)))
+
+;; Enhanced revoke certification function (contract owner or authorized certifiers)
+(define-public (revoke-certification (producer principal) (reason (string-ascii 50)))
+    (begin
+        ;; Check if caller is authorized to revoke
+        (asserts! (can-revoke-certification tx-sender) err-not-authorized)
+        ;; Check if producer is currently certified
+        (asserts! (default-to false (map-get? certified-producers producer)) err-not-certified)
+        ;; Validate revocation reason
+        (asserts! (validate-revocation-reason reason) err-invalid-reason)
+
+        ;; Get current producer data
+        (let (
+            (producer-data (unwrap! (map-get? producer-energy-data producer) err-not-certified))
+        )
+            ;; Update producer data with revocation details
+            (map-set producer-energy-data producer
+                {
+                    total-production: (get total-production producer-data),
+                    last-certification-date: (get last-certification-date producer-data),
+                    energy-source: (get energy-source producer-data),
+                    certification-status: false,
+                    revocation-reason: (some reason),
+                    revocation-date: (some block-height),
+                    revoked-by: (some tx-sender)
+                })
+            (map-delete certified-producers producer)
+            (ok true))))
+
+;; Read-only functions
+
+;; Check if a producer is certified
+(define-read-only (is-certified (producer principal))
+    (ok (default-to false (map-get? certified-producers producer))))
+
+;; Get producer data including revocation history
+(define-read-only (get-producer-data (producer principal))
+    (ok (default-to
+        {
+            total-production: u0,
+            last-certification-date: u0,
+            energy-source: "",
+            certification-status: false,
+            revocation-reason: none,
+            revocation-date: none,
+            revoked-by: none
+        }
+        (map-get? producer-energy-data producer))))
+
+
+;; Set minimum production requirement (only contract owner)
+(define-public (set-minimum-production (new-minimum uint))
+    (begin
+        (asserts! (is-eq tx-sender contract-owner) err-owner-only)
+        ;; Validate new minimum amount
+        (asserts! (and 
+            (> new-minimum u0)
+            (<= new-minimum (var-get max-production))
+        ) err-invalid-minimum)
+        (var-set minimum-production new-minimum)
+        (ok true)))
